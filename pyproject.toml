@@ -11,4 +11,24 @@ license = "MIT"
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.11,<3.12"
+torch = "^2.1.0"
+numpy = "^1.26.2"
+ffmpeg-python = "^0.2.0"
+scipy = "^1.11.3"
+pydub = "^0.25.1"
+
+[tool.poetry.group.dev.dependencies]
+mypy = "^1.7.0"
+
+[tool.mypy]
+plugins = ["numpy.typing.mypy_plugin"]
+
+disallow_any_generics = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["ffmpeg", "pydub.*", "scipy.*"]
+ignore_missing_imports = true
