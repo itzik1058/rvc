@@ -17,6 +17,7 @@ numpy = "^1.26.2"
 ffmpeg-python = "^0.2.0"
 scipy = "^1.11.3"
 pydub = "^0.25.1"
+torchaudio = "^2.1.0"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.7.0"
@@ -30,5 +31,5 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["ffmpeg", "pydub.*", "scipy.*"]
+module = ["ffmpeg", "pydub.*", "scipy.*", "torchaudio.*"]
 ignore_missing_imports = true
