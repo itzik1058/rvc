@@ -1,25 +1,24 @@
-from pathlib import Path
-
-import ffmpeg
 import numpy as np
 import numpy.typing as npt
 from pydub import AudioSegment
 
+SAMPLE_RATE = 16_000
 
-def load_audio(path: Path, sampling_rate_hz: int) -> npt.NDArray[np.float32]:
-    stdout, _ = (
-        ffmpeg.input(path, threads=0)
-        .output(
-            "-",
-            format="f32le",
-            acodec="pcm_f32le",
-            ac=1,
-            ar=sampling_rate_hz,
-        )
-        .run(
-            cmd=["ffmpeg", "-nostdin"],
-            capture_stdout=True,
-            capture_stderr=True,
-        )
+
+def numpy_to_pydub(audio: npt.NDArray[np.float_], sample_rate: int) -> AudioSegment:
+    audio_pcm32 = (audio.astype(np.float32) * (2**31 - 1)).astype(np.int32)
+    return AudioSegment(
+        audio_pcm32.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=audio_pcm32.dtype.itemsize,
+        channels=1,
     )
-    return np.frombuffer(stdout, np.float32).flatten()
+
+
+def pydub_to_numpy(segment: AudioSegment) -> npt.NDArray[np.float32]:
+    array = np.array(
+        segment.get_array_of_samples(),
+        dtype=np.float32,
+    ).reshape((-1, segment.channels))
+    array /= 1 << (8 * segment.sample_width - 1)
+    return array
