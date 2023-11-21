@@ -1,7 +1,42 @@
+# RMVPE: A Robust Model for Vocal Pitch Estimation in Polyphonic Music
+# https://arxiv.org/pdf/2306.15412.pdf
+# https://github.com/Dream-High/RMVPE
+
+import math
+from pathlib import Path
+from typing import Any
+
 import torch
 import torch.nn as nn
+import torch.nn.functional
+from torchaudio.transforms import MelSpectrogram
 
-from rvc.rmvpe.constants import N_MELS
+SAMPLE_RATE = 16000
+N_CLASS = 360
+N_MELS = 128
+MEL_FMIN = 30
+MEL_FMAX = SAMPLE_RATE // 2
+WINDOW_LENGTH = 2048
+REFERENCE_FREQUENCY = 10
+MIN_FREQUENCY = 32.7  # Octave C1 (Hz)
+MAX_FREQUENCY = 1975.5  # Octave B7 (Hz)
+MIN_CENT = 1200 * math.log2(MIN_FREQUENCY / REFERENCE_FREQUENCY)
+MAX_CENT = 1200 * math.log2(MAX_FREQUENCY / REFERENCE_FREQUENCY)
+
+
+class BiGRU(nn.Module):
+    def __init__(self, input_features: int, hidden_features: int, num_layers: int):
+        super(BiGRU, self).__init__()
+        self.gru = nn.GRU(
+            input_features,
+            hidden_features,
+            num_layers=num_layers,
+            batch_first=True,
+            bidirectional=True,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.gru(x)[0]
 
 
 class ConvBlockRes(nn.Module):
@@ -65,8 +100,8 @@ class ResEncoderBlock(nn.Module):
         self,
         x: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        for i in range(self.n_blocks):
-            x = self.conv[i](x)
+        for conv in self.conv:
+            x = conv(x)
         if self.kernel_size is not None:
             return x, self.pool(x)
         else:
@@ -106,8 +141,8 @@ class ResDecoderBlock(nn.Module):
     def forward(self, x: torch.Tensor, concat_tensor: torch.Tensor) -> torch.Tensor:
         x = self.conv1(x)
         x = torch.cat((x, concat_tensor), dim=1)
-        for i in range(self.n_blocks):
-            x = self.conv2[i](x)
+        for conv in self.conv2:
+            x = conv(x)
         return x
 
 
@@ -143,9 +178,9 @@ class Encoder(nn.Module):
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, list[torch.Tensor]]:
         concat_tensors = []
         x = self.bn(x)
-        for i in range(self.n_encoders):
-            _, x = self.layers[i](x)
-            concat_tensors.append(_)
+        for layer in self.layers:
+            t, x = layer(x)
+            concat_tensors.append(t)
         return x, concat_tensors
 
 
@@ -170,8 +205,8 @@ class Intermediate(nn.Module):
             )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for i in range(self.n_inters):
-            x = self.layers[i](x)
+        for layer in self.layers:
+            x = layer(x)
         return x
 
 
@@ -197,8 +232,8 @@ class Decoder(nn.Module):
     def forward(
         self, x: torch.Tensor, concat_tensors: list[torch.Tensor]
     ) -> torch.Tensor:
-        for i in range(self.n_decoders):
-            x = self.layers[i](x, concat_tensors[-1 - i])
+        for i, layer in enumerate(self.layers):
+            x = layer(x, concat_tensors[-1 - i])
         return x
 
 
@@ -236,7 +271,7 @@ class DeepUnet(nn.Module):
             inter_layers,
             n_blocks,
         )
-        self.tf = TimbreFilter(self.encoder.latent_channels)
+        # self.tf = TimbreFilter(self.encoder.latent_channels)
         self.decoder = Decoder(
             self.encoder.out_channel, en_de_layers, kernel_size, n_blocks
         )
@@ -244,6 +279,104 @@ class DeepUnet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x, concat_tensors = self.encoder(x)
         x = self.intermediate(x)
-        concat_tensors = self.tf(concat_tensors)
+        # concat_tensors = self.tf(concat_tensors)
         x = self.decoder(x, concat_tensors)
         return x
+
+
+class E2E(nn.Module):
+    def __init__(
+        self,
+        n_blocks: int,
+        n_gru: int,
+        kernel_size: int | tuple[int, int],
+        en_de_layers: int = 5,
+        inter_layers: int = 4,
+        in_channels: int = 1,
+        en_out_channels: int = 16,
+    ):
+        super(E2E, self).__init__()
+        self.unet = DeepUnet(
+            kernel_size,
+            n_blocks,
+            en_de_layers,
+            inter_layers,
+            in_channels,
+            en_out_channels,
+        )
+        self.cnn = nn.Conv2d(en_out_channels, 3, (3, 3), padding=(1, 1))
+        if n_gru:
+            self.fc = nn.Sequential(
+                BiGRU(3 * N_MELS, 256, n_gru),
+                nn.Linear(512, N_CLASS),
+                nn.Dropout(0.25),
+                nn.Sigmoid(),
+            )
+        else:
+            self.fc = nn.Sequential(
+                nn.Linear(3 * N_MELS, N_CLASS), nn.Dropout(0.25), nn.Sigmoid()
+            )
+
+    def forward(self, mel: torch.Tensor) -> torch.Tensor:
+        mel = mel.transpose(-1, -2).unsqueeze(1)
+        x = self.cnn(self.unet(mel)).transpose(1, 2).flatten(-2)
+        x = self.fc(x)
+        return x
+
+
+class RMVPE(nn.Module):
+    def __init__(
+        self,
+        path: Path,
+        threshold: float = 0.03,
+        n_blocks: int = 4,
+        n_gru: int = 1,
+        kernel_size: int | tuple[int, int] = (2, 2),
+        *args: Any,
+        **kwargs: Any
+    ) -> None:
+        super().__init__(*args, **kwargs)
+
+        self.threshold = threshold
+        self.mel = MelSpectrogram(
+            sample_rate=SAMPLE_RATE,
+            n_fft=WINDOW_LENGTH,
+            win_length=WINDOW_LENGTH,
+            hop_length=160,
+            f_min=MEL_FMIN,
+            f_max=MEL_FMAX,
+            n_mels=N_MELS,
+            power=1,
+            normalized=True,
+            center=True,
+        )
+        self.model = E2E(n_blocks, n_gru, kernel_size)
+        self.model.load_state_dict(torch.load(path, map_location=torch.device("cpu")))
+        # self.cents = 1200 * torch.log2(
+        #     torch.linspace(MIN_FREQUENCY, MAX_FREQUENCY, N_CLASS) / REFERENCE_FREQUENCY
+        # )
+        self.cents = 20 * torch.arange(N_CLASS) + MIN_CENT
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        mel = self.mel(x).log()
+        n_frames = mel.shape[-1]
+        n_pad = 32 * ((n_frames - 1) // 32 + 1) - n_frames
+        if n_pad > 0:
+            mel = torch.nn.functional.pad(mel, (0, n_pad), mode="constant")
+        prob = self.model(mel)
+        prob = prob[:, :n_frames].squeeze(0)
+        center = prob.argmax(-1)
+        start = center - 4
+        end = center + 5
+        prob_slice = torch.stack(
+            [prob[i, start[i] : end[i]] for i in range(prob.size(0))]
+        )
+        cent_slice = torch.stack(
+            [self.cents[start[i] : end[i]] for i in range(prob.size(0))]
+        )
+        weighted = (prob_slice * cent_slice).sum(-1) / prob_slice.sum(-1)
+        prob_max, _ = prob.max(-1)
+        weighted[prob_max <= self.threshold] = 0
+        f0 = REFERENCE_FREQUENCY * torch.pow(2, weighted / 1200)
+        f0[f0 == REFERENCE_FREQUENCY] = 0
+        return f0

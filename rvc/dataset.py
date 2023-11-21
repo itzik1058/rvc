@@ -1,5 +1,7 @@
+import math
 from pathlib import Path
-from typing import SupportsIndex, TypedDict
+from typing import Callable, SupportsIndex, TypedDict
+from fairseq.models.hubert import HubertModel
 
 import pydub.silence
 import scipy.signal
@@ -10,12 +12,18 @@ from torch.utils.data import Dataset
 
 from rvc.utils import SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
 
+F0_BIN = 256
+F0_MAX = 1100.0
+F0_MIN = 50.0
+F0_MEL_MIN = 1127 * math.log(1 + F0_MIN / 700)
+F0_MEL_MAX = 1127 * math.log(1 + F0_MAX / 700)
+
 
 class RVCSample(TypedDict):
     audio: torch.Tensor
     f0: torch.Tensor
     f0_coarse: torch.Tensor
-    hubert_features: torch.Tensor
+    features: torch.Tensor
 
 
 class RVCDataset(Dataset[RVCSample]):
@@ -23,6 +31,8 @@ class RVCDataset(Dataset[RVCSample]):
         self,
         path: Path,
         cache_path: Path,
+        pitch_estimator: Callable[[torch.Tensor], torch.Tensor],
+        hubert: HubertModel,
         min_silence_ms: int = 500,
         silence_thresh_dbfs: int = -42,
         keep_silence_ms: int = 500,
@@ -33,6 +43,8 @@ class RVCDataset(Dataset[RVCSample]):
     ) -> None:
         super().__init__()
 
+        self.pitch_estimator = pitch_estimator
+        self.feature_extractor = hubert
         self.min_silence_ms = min_silence_ms
         self.silence_thresh_dbfs = silence_thresh_dbfs
         self.keep_silence_ms = keep_silence_ms
@@ -45,11 +57,19 @@ class RVCDataset(Dataset[RVCSample]):
         self._load(path, cache_path)
 
     def __getitem__(self, index: SupportsIndex) -> RVCSample:
-        raise NotImplementedError()
+        path = self.samples[index]
+        audio, _ = torchaudio.load(path)
+        return {
+            "audio": audio,
+            "f0": torch.load(path.with_suffix("f0")),
+            "f0_coarse": torch.load(path.with_suffix("f0c")),
+            "features": torch.load(path.with_suffix("ft")),
+        }
 
     def __len__(self) -> int:
         return len(self.samples)
 
+    @torch.no_grad()
     def _load(self, path: Path, cache_path: Path) -> None:
         for p in path.iterdir():
             audio, sample_rate = torchaudio.load(p)
@@ -80,9 +100,12 @@ class RVCDataset(Dataset[RVCSample]):
                     if end - start < self.min_sample_ms:
                         continue
 
-                    sample = resample(
-                        torch.tensor(pydub_to_numpy(segment[start:end]).reshape(1, -1))
+                    sample = torch.tensor(
+                        pydub_to_numpy(segment[start:end]).reshape(1, -1)
                     )
+                    # smooth with normalized sample
+                    sample = sample.lerp(sample / sample.abs().max() * 0.9, 0.75)
+                    sample = resample(sample)
                     segment_path = cache_path / f"{p.stem}_{idx}_{start}_{end}.wav"
                     torchaudio.save(
                         segment_path,
@@ -90,3 +113,25 @@ class RVCDataset(Dataset[RVCSample]):
                         SAMPLE_RATE,
                         format="wav",
                     )
+
+                    f0 = self.pitch_estimator(sample)
+                    torch.save(f0, segment_path.with_suffix(".f0"))
+
+                    f0_mel = 1127 * torch.log(1 + f0 / 700)
+                    f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - F0_MEL_MIN) * (
+                        F0_BIN - 2
+                    ) / (F0_MEL_MAX - F0_MEL_MIN) + 1
+                    f0_mel[f0_mel <= 1] = 1
+                    f0_mel[f0_mel > F0_BIN - 1] = F0_BIN - 1
+                    f0_coarse = f0_mel.round().int()
+                    torch.save(f0_coarse, segment_path.with_suffix(".f0c"))
+
+                    logits, _ = self.feature_extractor.extract_features(
+                        source=sample,
+                        padding_mask=torch.zeros_like(sample).bool(),
+                        output_layer=12,
+                    )
+                    logits = logits.squeeze(0)
+                    torch.save(logits, segment_path.with_suffix(".ft"))
+
+                    self.samples.append(segment_path)

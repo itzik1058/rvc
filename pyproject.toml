@@ -10,14 +10,19 @@ authors = ["Itzik <74200683+itzik1058@users.noreply.github.com>"]
 license = "MIT"
 readme = "README.md"
 
+[tool.poetry.scripts]
+rvc = "rvc.__main__:__main__"
+
 [tool.poetry.dependencies]
-python = "^3.11,<3.12"
+python = "^3.10,<3.11"
 torch = "^2.1.0"
 numpy = "^1.26.2"
 ffmpeg-python = "^0.2.0"
 scipy = "^1.11.3"
 pydub = "^0.25.1"
 torchaudio = "^2.1.0"
+typer = "^0.9.0"
+fairseq = "^0.12.2"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.7.0"
@@ -31,5 +36,5 @@ disallow_untyped_defs = true
 check_untyped_defs = true
 
 [[tool.mypy.overrides]]
-module = ["ffmpeg", "pydub.*", "scipy.*", "torchaudio.*"]
+module = ["ffmpeg", "pydub.*", "scipy.*", "torchaudio.*", "fairseq.*"]
 ignore_missing_imports = true
