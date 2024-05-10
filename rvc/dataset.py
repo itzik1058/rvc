@@ -1,13 +1,14 @@
+import logging
 import math
 from pathlib import Path
 from typing import Callable, SupportsIndex, TypedDict
-from fairseq.models.hubert import HubertModel
 
 import pydub.silence
 import scipy.signal
 import torch
 import torchaudio
 import torchaudio.transforms
+from fairseq.models.hubert import HubertModel
 from torch.utils.data import Dataset
 
 from rvc.utils import SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
@@ -72,7 +73,13 @@ class RVCDataset(Dataset[RVCSample]):
     @torch.no_grad()
     def _load(self, path: Path, cache_path: Path) -> None:
         for p in path.iterdir():
-            audio, sample_rate = torchaudio.load(p)
+            if not p.is_file():
+                continue
+            try:
+                audio, sample_rate = torchaudio.load(p)
+            except Exception:
+                logging.error(f"failed to load {p.name}")
+                continue
 
             b, a = scipy.signal.butter(
                 N=5,

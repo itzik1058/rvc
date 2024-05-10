@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import Annotated
 
@@ -7,6 +8,8 @@ from typer import Argument, Typer
 
 from rvc.dataset import RVCDataset
 from rvc.rmvpe import RMVPE
+
+logging.basicConfig()
 
 app = Typer()
 
