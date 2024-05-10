@@ -26,7 +26,3 @@ def train(
 
     dataset = RVCDataset(data_path, cache_path, rmvpe, hubert)
     print(len(dataset))
-
-
-app()
-exit(0)
