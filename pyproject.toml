@@ -12,7 +12,7 @@ dependencies = [
     "scipy",
     "pydub",
     "torchaudio",
-    "typer",
+    "typer-slim",
     "fairseq",
 ]
 authors = [
