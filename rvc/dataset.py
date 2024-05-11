@@ -10,8 +10,9 @@ import torchaudio
 import torchaudio.transforms
 from fairseq.models.hubert import HubertModel
 from torch.utils.data import Dataset
+from tqdm import tqdm
 
-from rvc.utils import SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
+from rvc.utils import SAMPLE_RATE, TARGET_SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
 
 F0_BIN = 256
 F0_MAX = 1100.0
@@ -72,7 +73,7 @@ class RVCDataset(Dataset[RVCSample]):
 
     @torch.no_grad()
     def _load(self, path: Path, cache_path: Path) -> None:
-        for p in path.iterdir():
+        for p in tqdm(list(path.iterdir())):
             if not p.is_file():
                 continue
             try:
@@ -87,13 +88,17 @@ class RVCDataset(Dataset[RVCSample]):
                 btype="high",
                 fs=sample_rate,
             )
+            resample_target = torchaudio.transforms.Resample(
+                sample_rate, TARGET_SAMPLE_RATE
+            )
             resample = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
 
+            audio = resample_target(audio)
             audio = audio.mean(0)  # 1 channel
-            audio = scipy.signal.lfilter(b, a, audio).astype("float32")
+            audio = scipy.signal.lfilter(b, a, audio)
 
             segments = pydub.silence.split_on_silence(
-                numpy_to_pydub(audio, sample_rate),
+                numpy_to_pydub(audio, TARGET_SAMPLE_RATE),
                 min_silence_len=self.min_silence_ms,
                 silence_thresh=self.silence_thresh_dbfs,
                 keep_silence=self.keep_silence_ms,
@@ -111,18 +116,23 @@ class RVCDataset(Dataset[RVCSample]):
                         pydub_to_numpy(segment[start:end]).reshape(1, -1)
                     )
                     # smooth with normalized sample
-                    sample = sample.lerp(sample / sample.abs().max() * 0.9, 0.75)
-                    sample = resample(sample)
-                    segment_path = cache_path / f"{p.stem}_{idx}_{start}_{end}.wav"
-                    torchaudio.save(
-                        segment_path,
-                        sample,
-                        SAMPLE_RATE,
-                        format="wav",
+                    alpha = 0.75
+                    sample = (
+                        sample / sample.abs().max() * 0.9 * alpha + (1 - alpha) * sample
                     )
 
+                    segment_name = Path(f"{p.stem}_{idx}_{start}_{end}")
+                    torchaudio.save(
+                        cache_path / segment_name.with_suffix(".wav"),
+                        sample,
+                        TARGET_SAMPLE_RATE,
+                        format="wav",
+                        encoding="PCM_F",
+                    )
+
+                    sample = resample(sample.float())
                     f0 = self.pitch_estimator(sample)
-                    torch.save(f0, segment_path.with_suffix(".f0"))
+                    torch.save(f0, cache_path / segment_name.with_suffix(".f0"))
 
                     f0_mel = 1127 * torch.log(1 + f0 / 700)
                     f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - F0_MEL_MIN) * (
@@ -131,7 +141,10 @@ class RVCDataset(Dataset[RVCSample]):
                     f0_mel[f0_mel <= 1] = 1
                     f0_mel[f0_mel > F0_BIN - 1] = F0_BIN - 1
                     f0_coarse = f0_mel.round().int()
-                    torch.save(f0_coarse, segment_path.with_suffix(".f0c"))
+                    torch.save(
+                        f0_coarse,
+                        cache_path / segment_name.with_suffix(".f0c"),
+                    )
 
                     logits, _ = self.feature_extractor.extract_features(
                         source=sample,
@@ -139,6 +152,9 @@ class RVCDataset(Dataset[RVCSample]):
                         output_layer=12,
                     )
                     logits = logits.squeeze(0)
-                    torch.save(logits, segment_path.with_suffix(".ft"))
+                    torch.save(
+                        logits,
+                        cache_path / segment_name.with_suffix(".ft"),
+                    )
 
-                    self.samples.append(segment_path)
+                    self.samples.append(segment_name)

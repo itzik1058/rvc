@@ -3,6 +3,7 @@ import numpy.typing as npt
 from pydub import AudioSegment
 
 SAMPLE_RATE = 16_000
+TARGET_SAMPLE_RATE = 48_000
 
 
 def numpy_to_pydub(audio: npt.NDArray[np.float_], sample_rate: int) -> AudioSegment:
