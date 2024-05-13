@@ -8,7 +8,6 @@ import scipy.signal
 import torch
 import torchaudio
 import torchaudio.transforms
-from fairseq.models.hubert import HubertModel
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -34,7 +33,7 @@ class RVCDataset(Dataset[RVCSample]):
         path: Path,
         cache_path: Path,
         pitch_estimator: Callable[[torch.Tensor], torch.Tensor],
-        hubert: HubertModel,
+        feature_extractor: Callable[[torch.Tensor], torch.Tensor],
         min_silence_ms: int = 500,
         silence_thresh_dbfs: int = -42,
         keep_silence_ms: int = 500,
@@ -46,7 +45,7 @@ class RVCDataset(Dataset[RVCSample]):
         super().__init__()
 
         self.pitch_estimator = pitch_estimator
-        self.feature_extractor = hubert
+        self.feature_extractor = feature_extractor
         self.min_silence_ms = min_silence_ms
         self.silence_thresh_dbfs = silence_thresh_dbfs
         self.keep_silence_ms = keep_silence_ms
@@ -71,7 +70,7 @@ class RVCDataset(Dataset[RVCSample]):
     def __len__(self) -> int:
         return len(self.samples)
 
-    @torch.no_grad()
+    @torch.inference_mode()
     def _load(self, path: Path, cache_path: Path) -> None:
         for p in tqdm(list(path.iterdir())):
             if not p.is_file():
@@ -146,14 +145,10 @@ class RVCDataset(Dataset[RVCSample]):
                         cache_path / segment_name.with_suffix(".f0c"),
                     )
 
-                    logits, _ = self.feature_extractor.extract_features(
-                        source=sample,
-                        padding_mask=torch.zeros_like(sample).bool(),
-                        output_layer=12,
-                    )
-                    logits = logits.squeeze(0)
+                    features = self.feature_extractor(sample)
+                    features = features.squeeze(0)
                     torch.save(
-                        logits,
+                        features,
                         cache_path / segment_name.with_suffix(".ft"),
                     )
 

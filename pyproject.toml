@@ -13,7 +13,6 @@ dependencies = [
     "pydub",
     "torchaudio",
     "typer-slim",
-    "fairseq",
 ]
 authors = [
     { name = "Itzik", email = "74200683+itzik1058@users.noreply.github.com" },
@@ -26,6 +25,7 @@ dev = ["mypy"]
 
 [project.scripts]
 rvc = "rvc.__main__:app"
+convert_fairseq_wav2vec = "scripts.convert_fairseq_wav2vec:main"
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]
