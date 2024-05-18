@@ -59,12 +59,13 @@ class RVCDataset(Dataset[RVCSample]):
 
     def __getitem__(self, index: SupportsIndex) -> RVCSample:
         path = self.samples[index]
-        audio, _ = torchaudio.load(path)
+        audio, _ = torchaudio.load(path.with_suffix(".wav"))
         return {
             "audio": audio,
-            "f0": torch.load(path.with_suffix("f0")),
-            "f0_coarse": torch.load(path.with_suffix("f0c")),
-            "features": torch.load(path.with_suffix("ft")),
+            "spectrogram": torch.load(path.with_suffix(".spec")),
+            "f0": torch.load(path.with_suffix(".f0")),
+            "f0_coarse": torch.load(path.with_suffix(".f0c")),
+            "features": torch.load(path.with_suffix(".ft")),
         }
 
     def __len__(self) -> int:
@@ -90,7 +91,7 @@ class RVCDataset(Dataset[RVCSample]):
             resample_target = torchaudio.transforms.Resample(
                 sample_rate, TARGET_SAMPLE_RATE
             )
-            resample = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
+            resample_feature = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
 
             audio = resample_target(audio)
             audio = audio.mean(0)  # 1 channel
@@ -111,6 +112,12 @@ class RVCDataset(Dataset[RVCSample]):
                     if end - start < self.min_sample_ms:
                         continue
 
+                    segment_path = cache_path / f"{p.stem}_{idx}_{start}_{end}"
+                    segment_lock = segment_path.with_suffix(".lock")
+                    if segment_lock.is_file():
+                        self.samples.append(segment_path)
+                        continue
+
                     sample = torch.tensor(
                         pydub_to_numpy(segment[start:end]).reshape(1, -1)
                     )
@@ -120,18 +127,28 @@ class RVCDataset(Dataset[RVCSample]):
                         sample / sample.abs().max() * 0.9 * alpha + (1 - alpha) * sample
                     )
 
-                    segment_name = Path(f"{p.stem}_{idx}_{start}_{end}")
                     torchaudio.save(
-                        cache_path / segment_name.with_suffix(".wav"),
+                        segment_path.with_suffix(".wav"),
                         sample,
                         TARGET_SAMPLE_RATE,
                         format="wav",
                         encoding="PCM_F",
                     )
 
-                    sample = resample(sample.float())
-                    f0 = self.pitch_estimator(sample)
-                    torch.save(f0, cache_path / segment_name.with_suffix(".f0"))
+                    spectrogram = torchaudio.transforms.Spectrogram(
+                        n_fft=2048,
+                        win_length=2048,
+                        hop_length=TARGET_SAMPLE_RATE // 100,
+                        power=1,
+                    )
+                    torch.save(
+                        spectrogram(sample).squeeze(0),
+                        segment_path.with_suffix(".spec"),
+                    )
+
+                    sample_feature = resample_feature(sample.float())
+                    f0 = self.pitch_estimator(sample_feature)
+                    torch.save(f0, segment_path.with_suffix(".f0"))
 
                     f0_mel = 1127 * torch.log(1 + f0 / 700)
                     f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - F0_MEL_MIN) * (
@@ -142,14 +159,15 @@ class RVCDataset(Dataset[RVCSample]):
                     f0_coarse = f0_mel.round().int()
                     torch.save(
                         f0_coarse,
-                        cache_path / segment_name.with_suffix(".f0c"),
+                        segment_path.with_suffix(".f0c"),
                     )
 
-                    features = self.feature_extractor(sample)
-                    features = features.squeeze(0)
+                    features = self.feature_extractor(sample_feature)
                     torch.save(
-                        features,
-                        cache_path / segment_name.with_suffix(".ft"),
+                        features.squeeze(0),
+                        segment_path.with_suffix(".ft"),
                     )
 
-                    self.samples.append(segment_name)
+                    segment_lock.touch(exist_ok=True)
+
+                    self.samples.append(segment_path)
