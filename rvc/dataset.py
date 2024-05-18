@@ -14,7 +14,7 @@ import torchaudio.transforms
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
-from rvc.utils import SAMPLE_RATE, TARGET_SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
+from rvc.utils import SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
 
 F0_BIN = 256
 F0_MAX = 1100.0
@@ -53,6 +53,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         cache_path: Path | None,
         pitch_estimator: Callable[[torch.Tensor], torch.Tensor],
         feature_extractor: Callable[[torch.Tensor], torch.Tensor],
+        sample_rate: int = 48_000,
         min_silence_ms: int = 500,
         silence_thresh_dbfs: int = -42,
         keep_silence_ms: int = 500,
@@ -68,6 +69,9 @@ class RVCDataset(IterableDataset[RVCSample]):
 
         self.pitch_estimator = pitch_estimator
         self.feature_extractor = feature_extractor
+
+        self.sample_rate = sample_rate
+
         self.min_silence_ms = min_silence_ms
         self.silence_thresh_dbfs = silence_thresh_dbfs
         self.keep_silence_ms = keep_silence_ms
@@ -134,14 +138,12 @@ class RVCDataset(IterableDataset[RVCSample]):
             btype="high",
             fs=sample_rate,
         )
-        resample_target = torchaudio.transforms.Resample(
-            sample_rate, TARGET_SAMPLE_RATE
-        )
+        resample_target = torchaudio.transforms.Resample(sample_rate, self.sample_rate)
         resample_feature = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
         spectrogram_transform = torchaudio.transforms.Spectrogram(
             n_fft=2048,
             win_length=2048,
-            hop_length=TARGET_SAMPLE_RATE // 100,
+            hop_length=self.sample_rate // 100,
             power=1,
         )
 
@@ -150,7 +152,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         filtered_audio: npt.NDArray[np.float_] = scipy.signal.lfilter(b, a, audio)
 
         segments = pydub.silence.split_on_silence(
-            numpy_to_pydub(filtered_audio, TARGET_SAMPLE_RATE),
+            numpy_to_pydub(filtered_audio, self.sample_rate),
             min_silence_len=self.min_silence_ms,
             silence_thresh=self.silence_thresh_dbfs,
             keep_silence=self.keep_silence_ms,
@@ -209,7 +211,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         torchaudio.save(
             path.with_suffix(".wav"),
             sample.audio,
-            TARGET_SAMPLE_RATE,
+            self.sample_rate,
             format="wav",
             encoding="PCM_F",
         )
