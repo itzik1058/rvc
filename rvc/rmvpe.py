@@ -333,7 +333,7 @@ class RMVPE(nn.Module):
         n_gru: int = 1,
         kernel_size: int | tuple[int, int] = (2, 2),
         *args: Any,
-        **kwargs: Any
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
 

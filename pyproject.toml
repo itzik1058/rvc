@@ -7,11 +7,14 @@ name = "rvc"
 version = "0.1.0"
 dependencies = [
     "torch",
-    "numpy",
+    "torchaudio",
     "ffmpeg-python",
+    "numpy",
     "scipy",
     "pydub",
-    "torchaudio",
+    "scikit-learn",
+    "faiss-cpu",
+    "packaging",     # required by faiss
     "typer-slim",
     "tqdm",
 ]
