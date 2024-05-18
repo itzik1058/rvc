@@ -2,8 +2,10 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Iterator
 
+import numpy as np
+import numpy.typing as npt
 import pydub.silence
 import scipy.signal
 import torch
@@ -59,7 +61,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         self.max_sample_ms = max_sample_ms
         self.sample_overlap_ms = sample_overlap_ms
 
-    def __iter__(self) -> Iterable[RVCSample]:
+    def __iter__(self) -> Iterator[RVCSample]:
         for p in self.path.iterdir():
             if not p.is_file():
                 continue
@@ -98,16 +100,16 @@ class RVCDataset(IterableDataset[RVCSample]):
 
         audio = resample_target(audio)
         audio = audio.mean(0)  # 1 channel
-        audio = scipy.signal.lfilter(b, a, audio)
+        filtered_audio: npt.NDArray[np.float_] = scipy.signal.lfilter(b, a, audio)
 
         segments = pydub.silence.split_on_silence(
-            numpy_to_pydub(audio, TARGET_SAMPLE_RATE),
+            numpy_to_pydub(filtered_audio, TARGET_SAMPLE_RATE),
             min_silence_len=self.min_silence_ms,
             silence_thresh=self.silence_thresh_dbfs,
             keep_silence=self.keep_silence_ms,
             seek_step=self.seek_step_ms,
         )
-        for idx, segment in enumerate(segments):
+        for segment in segments:
             end = 0
             while end < len(segment):
                 start = max(0, end - self.sample_overlap_ms)
@@ -161,7 +163,7 @@ class RVCDataset(IterableDataset[RVCSample]):
                 features=torch.load(p.with_suffix(".ft")),
             )
 
-    def _save_sample(self, sample: RVCSample, path: Path):
+    def _save_sample(self, sample: RVCSample, path: Path) -> None:
         torchaudio.save(
             path.with_suffix(".wav"),
             sample.audio,
