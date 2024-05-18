@@ -7,7 +7,8 @@ TARGET_SAMPLE_RATE = 48_000
 
 
 def numpy_to_pydub(audio: npt.NDArray[np.float_], sample_rate: int) -> AudioSegment:
-    audio_pcm32 = (audio.astype(np.float32) * (2**31 - 1)).astype(np.int32)
+    audio_f32 = audio.astype(np.float32)
+    audio_pcm32 = (audio_f32 * (2**31 - 1)).round().astype(np.int32)
     return AudioSegment(
         audio_pcm32.tobytes(),
         frame_rate=sample_rate,

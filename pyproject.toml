@@ -26,7 +26,8 @@ dev = ["mypy"]
 
 [project.scripts]
 rvc = "rvc.__main__:app"
-convert_fairseq_wav2vec = "scripts.convert_fairseq_wav2vec:main"
+convert-fairseq-wav2vec = "scripts.convert_fairseq_wav2vec:main"
+export-rvc-project = "scripts.export_rvc_project:main"
 
 [tool.mypy]
 plugins = ["numpy.typing.mypy_plugin"]

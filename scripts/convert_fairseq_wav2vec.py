@@ -1,3 +1,5 @@
+# run with python<=3.10 and torch torchaudio typer fairseq
+
 from pathlib import Path
 
 import torch

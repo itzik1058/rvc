@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Annotated
 
 import torch
+from torch.utils.data import DataLoader
 from torchaudio.models import wav2vec2_base
 from typer import Argument, Typer
 
@@ -15,7 +16,6 @@ app = Typer()
 
 
 @app.command()
-@torch.inference_mode()
 def train(
     data_path: Annotated[Path, Argument()] = Path("env/data"),
     cache_path: Annotated[Path, Argument()] = Path("env/cache"),
@@ -35,4 +35,5 @@ def train(
         pitch_estimator=rmvpe,
         feature_extractor=feature_extractor,
     )
-    print(len(dataset))
+
+    data_loader = DataLoader(dataset)
