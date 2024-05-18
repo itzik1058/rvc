@@ -1,12 +1,12 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import numpy
 import torch
 import torchaudio
 from torchaudio.models import wav2vec2_base
 from tqdm import tqdm
-from typer import Argument, Typer
+from typer import Argument, Option, Typer
 
 from rvc.dataset import RVCDataset
 from rvc.rmvpe import RMVPE
@@ -17,9 +17,9 @@ main = Typer()
 @main.command()
 def export_rvc_project(
     data_path: Annotated[Path, Argument()] = Path("env/data"),
-    cache_path: Annotated[Path, Argument()] = Path("env/cache"),
     model_path: Annotated[Path, Argument()] = Path("env/models"),
     output_path: Annotated[Path, Argument()] = Path("env/rvc-project-data"),
+    cache_path: Annotated[Optional[Path], Option()] = None,
 ) -> None:
     rmvpe = RMVPE(model_path / "rmvpe.pt").eval()
     wav2vec2 = wav2vec2_base()

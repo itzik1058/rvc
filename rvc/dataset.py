@@ -11,6 +11,7 @@ import scipy.signal
 import torch
 import torchaudio
 import torchaudio.transforms
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
 from rvc.utils import SAMPLE_RATE, TARGET_SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
@@ -24,11 +25,25 @@ F0_MEL_MAX = 1127 * math.log(1 + F0_MAX / 700)
 
 @dataclass(frozen=True)
 class RVCSample:
+    speaker_id: torch.Tensor
     audio: torch.Tensor
     spectrogram: torch.Tensor
     f0: torch.Tensor
     f0_coarse: torch.Tensor
     features: torch.Tensor
+
+
+@dataclass(frozen=True)
+class RVCBatch:
+    speaker_id: torch.Tensor
+    audio: torch.Tensor
+    audio_lengths: torch.Tensor
+    spectrogram: torch.Tensor
+    spectrogram_lengths: torch.Tensor
+    f0: torch.Tensor
+    f0_coarse: torch.Tensor
+    features: torch.Tensor
+    features_lengths: torch.Tensor
 
 
 class RVCDataset(IterableDataset[RVCSample]):
@@ -85,6 +100,32 @@ class RVCDataset(IterableDataset[RVCSample]):
             if self.cache_path is not None:
                 cache_lock.touch(exist_ok=True)
 
+    @staticmethod
+    def collate_fn(batch: list[RVCSample]) -> RVCSample:
+        speaker_id, audio, spectrogram, f0, f0_coarse, features = [], [], [], [], [], []
+        audio_lengths, spectrogram_lengths, features_lengths = [], [], []
+        for sample in batch:
+            speaker_id.append(sample.speaker_id)
+            audio.append(sample.audio.transpose(0, 1))
+            audio_lengths.append(sample.audio.size(0))
+            spectrogram.append(sample.spectrogram.transpose(0, 1))
+            spectrogram_lengths.append(sample.spectrogram.size(1))
+            f0.append(sample.f0)
+            f0_coarse.append(sample.f0_coarse)
+            features.append(sample.features)
+            features_lengths.append(sample.features.size(0))
+        return RVCBatch(
+            speaker_id=torch.as_tensor(speaker_id),
+            audio=pad_sequence(audio, batch_first=True).transpose(1, 2),
+            audio_lengths=torch.as_tensor(audio_lengths),
+            spectrogram=pad_sequence(spectrogram, batch_first=True).transpose(1, 2),
+            spectrogram_lengths=torch.as_tensor(spectrogram_lengths),
+            f0=pad_sequence(f0, batch_first=True),
+            f0_coarse=pad_sequence(f0_coarse, batch_first=True),
+            features=pad_sequence(features, batch_first=True),
+            features_lengths=torch.as_tensor(features_lengths),
+        )
+
     @torch.inference_mode()
     def _preprocess(self, audio: torch.Tensor, sample_rate: int) -> Iterable[RVCSample]:
         b, a = scipy.signal.butter(
@@ -97,9 +138,15 @@ class RVCDataset(IterableDataset[RVCSample]):
             sample_rate, TARGET_SAMPLE_RATE
         )
         resample_feature = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
+        spectrogram_transform = torchaudio.transforms.Spectrogram(
+            n_fft=2048,
+            win_length=2048,
+            hop_length=TARGET_SAMPLE_RATE // 100,
+            power=1,
+        )
 
         audio = resample_target(audio)
-        audio = audio.mean(0)  # 1 channel
+        audio = audio.mean(0)  # convert stereo to mono
         filtered_audio: npt.NDArray[np.float_] = scipy.signal.lfilter(b, a, audio)
 
         segments = pydub.silence.split_on_silence(
@@ -124,13 +171,6 @@ class RVCDataset(IterableDataset[RVCSample]):
                     sample / sample.abs().max() * 0.9 * alpha + (1 - alpha) * sample
                 )
 
-                spectrogram = torchaudio.transforms.Spectrogram(
-                    n_fft=2048,
-                    win_length=2048,
-                    hop_length=TARGET_SAMPLE_RATE // 100,
-                    power=1,
-                )
-
                 sample_feature = resample_feature(sample.float())
                 f0 = self.pitch_estimator(sample_feature)
 
@@ -145,8 +185,9 @@ class RVCDataset(IterableDataset[RVCSample]):
                 features = self.feature_extractor(sample_feature)
 
                 yield RVCSample(
+                    speaker_id=torch.zeros(1, dtype=torch.long),
                     audio=sample,
-                    spectrogram=spectrogram(sample).squeeze(0),
+                    spectrogram=spectrogram_transform(sample).squeeze(0),
                     f0=f0,
                     f0_coarse=f0_coarse,
                     features=features.squeeze(0),
@@ -156,6 +197,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         for p in path.glob("*.wav"):
             audio, _ = torchaudio.load(p.with_suffix(".wav"))
             yield RVCSample(
+                speaker_id=torch.zeros(1, dtype=torch.long),
                 audio=audio,
                 spectrogram=torch.load(p.with_suffix(".spec")),
                 f0=torch.load(p.with_suffix(".f0")),
