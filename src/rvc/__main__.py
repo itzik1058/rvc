@@ -2,10 +2,13 @@ import logging
 import math
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Annotated, Optional
+from typing import Annotated
 
 import faiss
 import torch
+import torchaudio
+from scipy import signal
+from sklearn.cluster import MiniBatchKMeans
 from torch.amp import GradScaler
 from torch.nn.functional import l1_loss
 from torch.optim import AdamW
@@ -13,7 +16,7 @@ from torch.optim.lr_scheduler import ExponentialLR
 from torch.utils.data import DataLoader
 from torchaudio.models import wav2vec2_base
 from torchaudio.transforms import MelScale, MelSpectrogram
-from tqdm import trange
+from tqdm import tqdm, trange
 from typer import Argument, Option, Typer
 
 from rvc.dataset import RVCBatch, RVCDataset
@@ -32,12 +35,13 @@ def train(
     checkpoint_path: Annotated[Path, Argument()] = Path("env/rvc.pt"),
     data_path: Annotated[Path, Argument()] = Path("env/data"),
     model_path: Annotated[Path, Argument()] = Path("env/models"),
-    cache_path: Annotated[Optional[Path], Option()] = None,
+    cache_path: Annotated[Path | None, Option()] = None,
+    device: Annotated[str, Option()] = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> None:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     rmvpe = RMVPE(model_path / "rmvpe.pt").eval()
     wav2vec2 = wav2vec2_base()
-    wav2vec2.load_state_dict(torch.load(model_path / "wav2vec2.pt"))
+    wav2vec2.load_state_dict(torch.load(model_path / "wav2vec2.pt", weights_only=True))
 
     def feature_extractor(waveform: torch.Tensor) -> torch.Tensor:
         features, _ = wav2vec2.extract_features(waveform)
@@ -52,19 +56,30 @@ def train(
 
     with torch.inference_mode():
         features = []
-        for sample in dataset:
+        for sample in tqdm(dataset, "faiss index"):
             features.append(sample.features)
         all_features = torch.concat(features)
 
+        if all_features.size(0) >= 10000:
+            kmeans = MiniBatchKMeans(
+                n_clusters=10000,
+                # verbose=True,
+                batch_size=256,
+                compute_labels=False,
+                init="random",
+            )
+            all_features = kmeans.fit(all_features).cluster_centers_
+
         n_ivf = min(
-            int(16 * math.sqrt(all_features.size(0))), all_features.size(0) // 39
+            int(16 * math.sqrt(all_features.shape[0])),
+            all_features.shape[0] // 39,
         )
         index = faiss.index_factory(768, f"IVF{n_ivf},Flat")
         index_ivf = faiss.extract_index_ivf(index)
         index_ivf.nprobe = 1
         index.train(all_features)
         batch_size_add = 8192
-        for i in range(0, all_features.size(0), batch_size_add):
+        for i in range(0, all_features.shape[0], batch_size_add):
             index.add(all_features[i : i + batch_size_add])
         faiss.write_index(
             index,
@@ -127,8 +142,10 @@ def train(
         hps.train.segment_size // hps.data.hop_length,
         **vars(hps.model),
         sr=hps.sample_rate,
-    )
-    net_d = MultiPeriodDiscriminatorV2(use_spectral_norm=hps.model.use_spectral_norm)
+    ).to(device)
+    net_d = MultiPeriodDiscriminatorV2(
+        use_spectral_norm=hps.model.use_spectral_norm
+    ).to(device)
     optim_g = AdamW(
         net_g.parameters(),
         hps.train.learning_rate,
@@ -141,8 +158,20 @@ def train(
         betas=hps.train.betas,
         eps=hps.train.eps,
     )
-    net_g.load_state_dict(torch.load(model_path / "f0G48k.pth")["model"])
-    net_d.load_state_dict(torch.load(model_path / "f0D48k.pth")["model"])
+    net_g.load_state_dict(
+        torch.load(
+            model_path / "f0G48k.pth",
+            map_location=device,
+            weights_only=True,
+        )["model"]
+    )
+    net_d.load_state_dict(
+        torch.load(
+            model_path / "f0D48k.pth",
+            map_location=device,
+            weights_only=True,
+        )["model"]
+    )
     scheduler_g = ExponentialLR(optim_g, gamma=hps.train.lr_decay)
     scheduler_d = ExponentialLR(optim_d, gamma=hps.train.lr_decay)
     scaler = GradScaler(enabled=False)
@@ -152,7 +181,7 @@ def train(
         f_min=hps.data.mel_fmin,
         f_max=hps.data.mel_fmax,
         n_stft=hps.data.filter_length // 2 + 1,
-    )
+    ).to(device)
     mel_spectrogram_transform = MelSpectrogram(
         sample_rate=hps.data.sampling_rate,
         n_fft=hps.data.filter_length,
@@ -162,21 +191,23 @@ def train(
         f_max=hps.data.mel_fmax,
         n_mels=hps.data.n_mel_channels,
         power=1,
-    )
-    for epoch in trange(20):
+    ).to(device)
+    for epoch in trange(20, desc="train"):
         net_g.train()
         net_d.train()
         for batch in data_loader:
             batch: RVCBatch
-            features_adj = batch.features.repeat_interleave(2, 1)
-            features_lengths_adj = batch.features_lengths * 2
-            feature_max_len = features_adj.size(1)
-            f0_adj = batch.f0[:, :feature_max_len]
-            f0_coarse_adj = batch.f0_coarse[:, :feature_max_len]
-            spectrogram_adj = batch.spectrogram[:, :, :feature_max_len]
-            spectrogram_lengths_adj = torch.as_tensor(
+            speaker_id = batch.speaker_id.to(device)
+            audio = batch.audio.to(device)
+            features = batch.features.repeat_interleave(2, 1).to(device)
+            features_lengths = batch.features_lengths.mul(2).to(device)
+            feature_max_len = features.size(1)
+            f0 = batch.f0[:, :feature_max_len].to(device)
+            f0_coarse = batch.f0_coarse[:, :feature_max_len].to(device)
+            spectrogram = batch.spectrogram[:, :, :feature_max_len].to(device)
+            spectrogram_lengths = torch.as_tensor(
                 [min(length, feature_max_len) for length in batch.spectrogram_lengths]
-            )
+            ).to(device)
             (
                 y_hat,
                 ids_slice,
@@ -184,22 +215,22 @@ def train(
                 z_mask,
                 (z, z_p, m_p, logs_p, m_q, logs_q),
             ) = net_g(
-                features_adj,
-                features_lengths_adj,
-                f0_coarse_adj,
-                f0_adj,
-                spectrogram_adj,
-                spectrogram_lengths_adj,
-                batch.speaker_id,
+                features,
+                features_lengths,
+                f0_coarse,
+                f0,
+                spectrogram,
+                spectrogram_lengths,
+                speaker_id,
             )
-            mel = mel_transform(spectrogram_adj)
+            mel = mel_transform(spectrogram)
             y_mel = commons.slice_segments(
                 mel, ids_slice, hps.train.segment_size // hps.data.hop_length
             )
             y_hat_mel = mel_spectrogram_transform(y_hat.float().squeeze(1))
             y_hat_mel = y_hat_mel[:, :, : y_mel.size(2)]  # FIXME match lengths
             wave = commons.slice_segments(
-                batch.audio, ids_slice * hps.data.hop_length, hps.train.segment_size
+                audio, ids_slice * hps.data.hop_length, hps.train.segment_size
             )
             y_d_hat_r, y_d_hat_g, _, _ = net_d(wave, y_hat.detach())
             loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(
@@ -208,7 +239,7 @@ def train(
             optim_d.zero_grad()
             scaler.scale(loss_disc).backward()
             scaler.unscale_(optim_d)
-            grad_norm_d = commons.clip_grad_value_(net_d.parameters(), None)
+            commons.clip_grad_value_(net_d.parameters(), None)
             scaler.step(optim_d)
             y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = net_d(wave, y_hat)
             loss_mel = l1_loss(y_mel, y_hat_mel) * hps.train.c_mel
@@ -219,7 +250,7 @@ def train(
             optim_g.zero_grad()
             scaler.scale(loss_gen_all).backward()
             scaler.unscale_(optim_g)
-            grad_norm_g = commons.clip_grad_value_(net_g.parameters(), None)
+            commons.clip_grad_value_(net_g.parameters(), None)
             scaler.step(optim_g)
             scaler.update()
 
@@ -227,7 +258,8 @@ def train(
         scheduler_d.step()
 
         print(
-            f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
+            f"loss_disc={loss_disc:.3f}, loss_gen={loss_gen:.3f}, "
+            f"loss_fm={loss_fm:.3f},loss_mel={loss_mel:.3f}, loss_kl={loss_kl:.3f}"
         )
 
     checkpoint = net_g.state_dict()
@@ -268,6 +300,20 @@ def train(
 @torch.inference_mode()
 def inference(
     input_path: Annotated[Path, Argument()],
+    checkpoint_path: Annotated[Path, Argument()] = Path("env/rvc.pt"),
     model_path: Annotated[Path, Argument()] = Path("env/models"),
 ):
-    pass
+    RMVPE(model_path / "rmvpe.pt").eval()
+    wav2vec2 = wav2vec2_base()
+    wav2vec2.load_state_dict(torch.load(model_path / "wav2vec2.pt", weights_only=True))
+
+    def feature_extractor(waveform: torch.Tensor) -> torch.Tensor:
+        features, _ = wav2vec2.extract_features(waveform)
+        return features[-1]
+
+    audio, sample_rate = torchaudio.load(input_path)
+    resample = torchaudio.transforms.Resample(sample_rate, 16_000)
+    audio = resample(audio)
+    bh, ah = signal.butter(N=5, Wn=48, btype="high", fs=16000)
+    audio = signal.filtfilt(bh, ah, audio)
+    print(audio.max())

@@ -1,8 +1,8 @@
 import logging
 import math
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
 
 import numpy as np
 import numpy.typing as npt
@@ -93,8 +93,8 @@ class RVCDataset(IterableDataset[RVCSample]):
                     continue
             try:
                 audio, sample_rate = torchaudio.load(p)
-            except Exception:
-                logging.error(f"failed to load {p.name}")
+            except Exception as e:
+                logging.error(f"failed to load {p.name}: {e}")
                 continue
             for i, sample in enumerate(self._preprocess(audio, sample_rate)):
                 yield sample
@@ -201,10 +201,10 @@ class RVCDataset(IterableDataset[RVCSample]):
             yield RVCSample(
                 speaker_id=torch.zeros(1, dtype=torch.long),
                 audio=audio,
-                spectrogram=torch.load(p.with_suffix(".spec")),
-                f0=torch.load(p.with_suffix(".f0")),
-                f0_coarse=torch.load(p.with_suffix(".f0c")),
-                features=torch.load(p.with_suffix(".ft")),
+                spectrogram=torch.load(p.with_suffix(".spec"), weights_only=True),
+                f0=torch.load(p.with_suffix(".f0"), weights_only=True),
+                f0_coarse=torch.load(p.with_suffix(".f0c"), weights_only=True),
+                features=torch.load(p.with_suffix(".ft"), weights_only=True),
             )
 
     def _save_sample(self, sample: RVCSample, path: Path) -> None:

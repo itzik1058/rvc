@@ -1,5 +1,4 @@
 import math
-from typing import List, Optional
 
 import torch
 from torch.nn import functional as F
@@ -118,7 +117,7 @@ def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
 #     return pad_shape
 
 
-def convert_pad_shape(pad_shape: List[List[int]]) -> List[int]:
+def convert_pad_shape(pad_shape: list[list[int]]) -> list[int]:
     return torch.tensor(pad_shape).flip(0).reshape(-1).int().tolist()
 
 
@@ -127,7 +126,7 @@ def shift_1d(x):
     return x
 
 
-def sequence_mask(length: torch.Tensor, max_length: Optional[int] = None):
+def sequence_mask(length: torch.Tensor, max_length: int | None = None):
     if max_length is None:
         max_length = length.max()
     x = torch.arange(max_length, dtype=length.dtype, device=length.device)

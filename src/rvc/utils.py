@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import numpy.typing as npt
 from pydub import AudioSegment
@@ -6,9 +8,11 @@ SAMPLE_RATE = 16_000
 TARGET_SAMPLE_RATE = 48_000
 
 
-def numpy_to_pydub(audio: npt.NDArray[np.float_], sample_rate: int) -> AudioSegment:
+def numpy_to_pydub(audio: npt.NDArray[np.float64], sample_rate: int) -> AudioSegment:
     audio_f32 = audio.astype(np.float32)
-    audio_pcm32 = (audio_f32 * (2**31 - 1)).round().astype(np.int32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        audio_pcm32 = (audio_f32 * (2**31 - 1)).round().astype(np.int32)
     return AudioSegment(
         audio_pcm32.tobytes(),
         frame_rate=sample_rate,

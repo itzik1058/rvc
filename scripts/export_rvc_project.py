@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 import numpy
 import torch
@@ -19,7 +19,7 @@ def export_rvc_project(
     data_path: Annotated[Path, Argument()] = Path("env/data"),
     model_path: Annotated[Path, Argument()] = Path("env/models"),
     output_path: Annotated[Path, Argument()] = Path("env/rvc-project-data"),
-    cache_path: Annotated[Optional[Path], Option()] = None,
+    cache_path: Annotated[Path | None, Option()] = None,
 ) -> None:
     rmvpe = RMVPE(model_path / "rmvpe.pt").eval()
     wav2vec2 = wav2vec2_base()

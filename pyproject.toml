@@ -1,45 +1,37 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
 name = "rvc"
-version = "0.1.0"
-dependencies = [
-    "torch",
-    "torchaudio",
-    "ffmpeg-python",
-    "numpy",
-    "scipy",
-    "pydub",
-    "scikit-learn",
-    "faiss-cpu",
-    "packaging",     # required by faiss
-    "typer-slim",
-    "tqdm",
-]
-authors = [
-    { name = "Itzik", email = "74200683+itzik1058@users.noreply.github.com" },
-]
-license = { file = "LICENSE" }
+dynamic = ["version"]
+description = ""
 readme = "README.md"
-
-[project.optional-dependencies]
-dev = ["mypy"]
+requires-python = ">=3.12"
+dependencies = [
+    "faiss-cpu>=1.9.0.post1",
+    "ffmpeg-python>=0.2.0",
+    "numpy>=2.2.0",
+    "pydub>=0.25.1",
+    "scikit-learn>=1.5.2",
+    "scipy>=1.14.1",
+    "torch>=2.5.1",
+    "torchaudio>=2.5.1",
+    "tqdm>=4.67.1",
+    "typer-slim>=0.15.1",
+]
 
 [project.scripts]
 rvc = "rvc.__main__:app"
 convert-fairseq-wav2vec = "scripts.convert_fairseq_wav2vec:main"
 export-rvc-project = "scripts.export_rvc_project:main"
 
-[tool.mypy]
-plugins = ["numpy.typing.mypy_plugin"]
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-disallow_any_generics = true
-disallow_untyped_calls = true
-disallow_untyped_defs = true
-check_untyped_defs = true
+[tool.hatch.version]
+path = "src/rvc/__init__.py"
 
-[[tool.mypy.overrides]]
-module = ["ffmpeg", "pydub.*", "scipy.*", "torchaudio.*", "fairseq.*"]
-ignore_missing_imports = true
+[tool.ruff.lint]
+select = ["F", "E", "I", "N", "UP", "A", "C4", "RUF"]
+ignore = ["N801", "N812"]
+
+[dependency-groups]
+dev = ["ruff>=0.8.2"]
