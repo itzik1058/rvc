@@ -13,9 +13,9 @@ import torchaudio.transforms
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
-from rvc.utils import f0_coarse_representation, numpy_to_pydub, pydub_to_numpy
+from rvc.pipeline.utils import f0_coarse_representation, numpy_to_pydub, pydub_to_numpy
 
-SAMPLE_RATE = 16_000
+FEATURE_EXTRACTOR_SAMPLE_RATE = 16_000
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ class RVCDataset(IterableDataset[AudioFeatureSample]):
                 cache_lock.touch(exist_ok=True)
 
     @staticmethod
-    def collate_fn(batch: list[AudioFeatureSample]) -> AudioFeatureSample:
+    def collate_fn(batch: list[AudioFeatureSample]) -> AudioFeatureBatch:
         speaker_id, audio, spectrogram, f0, f0_coarse, features = [], [], [], [], [], []
         audio_lengths, spectrogram_lengths, features_lengths = [], [], []
         for sample in batch:
@@ -136,7 +136,9 @@ class RVCDataset(IterableDataset[AudioFeatureSample]):
             fs=sample_rate,
         )
         resample_target = torchaudio.transforms.Resample(sample_rate, self.sample_rate)
-        resample_feature = torchaudio.transforms.Resample(sample_rate, SAMPLE_RATE)
+        resample_feature = torchaudio.transforms.Resample(
+            self.sample_rate, FEATURE_EXTRACTOR_SAMPLE_RATE
+        )
         spectrogram_transform = torchaudio.transforms.Spectrogram(
             n_fft=2048,
             win_length=2048,

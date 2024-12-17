@@ -342,7 +342,7 @@ class RMVPE(nn.Module):
             sample_rate=SAMPLE_RATE,
             n_fft=WINDOW_LENGTH,
             win_length=WINDOW_LENGTH,
-            hop_length=160,
+            hop_length=SAMPLE_RATE // 100,
             f_min=MEL_FMIN,
             f_max=MEL_FMAX,
             n_mels=N_MELS,

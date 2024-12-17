@@ -4,8 +4,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from rvc.model import commons
-from rvc.model.modules import LayerNorm
+from rvc.model.vits import commons
+from rvc.model.vits.modules import LayerNorm
 
 
 class Encoder(nn.Module):
