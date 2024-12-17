@@ -4,30 +4,25 @@ from typing import Annotated
 import numpy
 import torch
 import torchaudio
-from torchaudio.models import wav2vec2_base
 from tqdm import tqdm
 from typer import Argument, Option, Typer
 
-from rvc.dataset import RVCDataset
-from rvc.rmvpe import RMVPE
+from rvc.model.rmvpe import RMVPE
+from rvc.pipeline.dataset import RVCDataset
+from rvc.pipeline.preprocess import make_feature_extractor
 
 main = Typer()
 
 
 @main.command()
 def export_rvc_project(
-    data_path: Annotated[Path, Argument()] = Path("env/data"),
-    model_path: Annotated[Path, Argument()] = Path("env/models"),
-    output_path: Annotated[Path, Argument()] = Path("env/rvc-project-data"),
+    data_path: Annotated[Path, Argument()],
+    model_path: Annotated[Path, Argument()],
+    output_path: Annotated[Path, Argument()],
     cache_path: Annotated[Path | None, Option()] = None,
 ) -> None:
     rmvpe = RMVPE(model_path / "rmvpe.pt").eval()
-    wav2vec2 = wav2vec2_base()
-    wav2vec2.load_state_dict(torch.load(model_path / "wav2vec2.pt"))
-
-    def feature_extractor(waveform: torch.Tensor) -> torch.Tensor:
-        features, _ = wav2vec2.extract_features(waveform)
-        return features[-1]
+    feature_extractor = make_feature_extractor(model_path / "wav2vec2.pt")
 
     dataset = RVCDataset(
         data_path,
@@ -53,3 +48,7 @@ def export_rvc_project(
         numpy.save(output_path / "2a_f0" / f"{i}.wav.npy", sample.f0_coarse)
         numpy.save(output_path / "2b-f0nsf" / f"{i}.wav.npy", sample.f0)
         numpy.save(output_path / "3_feature768" / f"{i}.npy", sample.features)
+
+
+if __name__ == "__main__":
+    main()

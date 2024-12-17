@@ -18,9 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-rvc = "rvc.__main__:app"
-convert-fairseq-wav2vec = "scripts.convert_fairseq_wav2vec:main"
-export-rvc-project = "scripts.export_rvc_project:main"
+rvc = "rvc.core.cli:app"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,4 +1,10 @@
-# run with python<=3.10 and torch torchaudio typer fairseq
+# /// script
+# requires-python = "==3.10.*"
+# dependencies = [
+#     "fairseq",
+#     "typer-slim",
+# ]
+# ///
 
 from pathlib import Path
 
@@ -10,7 +16,9 @@ from typer import Typer
 main = Typer()
 
 
-@main.command()
+@main.command(
+    help="https://github.com/facebookresearch/fairseq/blob/main/examples/hubert/README.md"
+)
 def convert_fairseq_wav2vec(fairseq_path: Path, output_path: Path):
     (model,), _, _ = load_model_ensemble_and_task(
         [fairseq_path.as_posix()],
@@ -18,3 +26,7 @@ def convert_fairseq_wav2vec(fairseq_path: Path, output_path: Path):
     )
     wav2vec2 = import_fairseq_model(model)
     torch.save(wav2vec2.state_dict(), output_path)
+
+
+if __name__ == "__main__":
+    main()
