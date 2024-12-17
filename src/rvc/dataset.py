@@ -1,5 +1,4 @@
 import logging
-import math
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,17 +13,13 @@ import torchaudio.transforms
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import IterableDataset
 
-from rvc.utils import SAMPLE_RATE, numpy_to_pydub, pydub_to_numpy
+from rvc.utils import f0_coarse_representation, numpy_to_pydub, pydub_to_numpy
 
-F0_BIN = 256
-F0_MAX = 1100.0
-F0_MIN = 50.0
-F0_MEL_MIN = 1127 * math.log(1 + F0_MIN / 700)
-F0_MEL_MAX = 1127 * math.log(1 + F0_MAX / 700)
+SAMPLE_RATE = 16_000
 
 
 @dataclass(frozen=True)
-class RVCSample:
+class AudioFeatureSample:
     speaker_id: torch.Tensor
     audio: torch.Tensor
     spectrogram: torch.Tensor
@@ -34,7 +29,7 @@ class RVCSample:
 
 
 @dataclass(frozen=True)
-class RVCBatch:
+class AudioFeatureBatch:
     speaker_id: torch.Tensor
     audio: torch.Tensor
     audio_lengths: torch.Tensor
@@ -46,7 +41,7 @@ class RVCBatch:
     features_lengths: torch.Tensor
 
 
-class RVCDataset(IterableDataset[RVCSample]):
+class RVCDataset(IterableDataset[AudioFeatureSample]):
     def __init__(
         self,
         path: Path,
@@ -80,7 +75,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         self.max_sample_ms = max_sample_ms
         self.sample_overlap_ms = sample_overlap_ms
 
-    def __iter__(self) -> Iterator[RVCSample]:
+    def __iter__(self) -> Iterator[AudioFeatureSample]:
         for p in self.path.iterdir():
             if not p.is_file():
                 continue
@@ -105,7 +100,7 @@ class RVCDataset(IterableDataset[RVCSample]):
                 cache_lock.touch(exist_ok=True)
 
     @staticmethod
-    def collate_fn(batch: list[RVCSample]) -> RVCSample:
+    def collate_fn(batch: list[AudioFeatureSample]) -> AudioFeatureSample:
         speaker_id, audio, spectrogram, f0, f0_coarse, features = [], [], [], [], [], []
         audio_lengths, spectrogram_lengths, features_lengths = [], [], []
         for sample in batch:
@@ -118,7 +113,7 @@ class RVCDataset(IterableDataset[RVCSample]):
             f0_coarse.append(sample.f0_coarse)
             features.append(sample.features)
             features_lengths.append(sample.features.size(0))
-        return RVCBatch(
+        return AudioFeatureBatch(
             speaker_id=torch.as_tensor(speaker_id),
             audio=pad_sequence(audio, batch_first=True).transpose(1, 2),
             audio_lengths=torch.as_tensor(audio_lengths),
@@ -131,7 +126,9 @@ class RVCDataset(IterableDataset[RVCSample]):
         )
 
     @torch.inference_mode()
-    def _preprocess(self, audio: torch.Tensor, sample_rate: int) -> Iterable[RVCSample]:
+    def _preprocess(
+        self, audio: torch.Tensor, sample_rate: int
+    ) -> Iterable[AudioFeatureSample]:
         b, a = scipy.signal.butter(
             N=5,
             Wn=48,
@@ -148,7 +145,7 @@ class RVCDataset(IterableDataset[RVCSample]):
         )
 
         audio = resample_target(audio)
-        audio = audio.mean(0)  # convert stereo to mono
+        audio = audio.mean(0)  # convert to mono
         filtered_audio: npt.NDArray[np.float_] = scipy.signal.lfilter(b, a, audio)
 
         segments = pydub.silence.split_on_silence(
@@ -166,39 +163,35 @@ class RVCDataset(IterableDataset[RVCSample]):
                 if end - start < self.min_sample_ms:
                     continue
 
-                sample = torch.tensor(pydub_to_numpy(segment[start:end]).reshape(1, -1))
+                audio_segment = torch.tensor(
+                    pydub_to_numpy(segment[start:end]).reshape(1, -1)
+                )
                 # smooth with normalized sample
                 alpha = 0.75
-                sample = (
-                    sample / sample.abs().max() * 0.9 * alpha + (1 - alpha) * sample
+                audio_segment = (
+                    audio_segment / audio_segment.abs().max() * 0.9 * alpha
+                    + (1 - alpha) * audio_segment
                 )
 
-                sample_feature = resample_feature(sample.float())
+                sample_feature = resample_feature(audio_segment.float())
                 f0 = self.pitch_estimator(sample_feature)
-
-                f0_mel = 1127 * torch.log(1 + f0 / 700)
-                f0_mel[f0_mel > 0] = (f0_mel[f0_mel > 0] - F0_MEL_MIN) * (
-                    F0_BIN - 2
-                ) / (F0_MEL_MAX - F0_MEL_MIN) + 1
-                f0_mel[f0_mel <= 1] = 1
-                f0_mel[f0_mel > F0_BIN - 1] = F0_BIN - 1
-                f0_coarse = f0_mel.round().int()
+                f0_coarse = f0_coarse_representation(f0)
 
                 features = self.feature_extractor(sample_feature)
 
-                yield RVCSample(
+                yield AudioFeatureSample(
                     speaker_id=torch.zeros(1, dtype=torch.long),
-                    audio=sample,
-                    spectrogram=spectrogram_transform(sample).squeeze(0),
+                    audio=audio_segment,
+                    spectrogram=spectrogram_transform(audio_segment).squeeze(0),
                     f0=f0,
                     f0_coarse=f0_coarse,
                     features=features.squeeze(0),
                 )
 
-    def _load(self, path: Path) -> Iterable[RVCSample]:
+    def _load(self, path: Path) -> Iterable[AudioFeatureSample]:
         for p in path.glob("*.wav"):
             audio, _ = torchaudio.load(p.with_suffix(".wav"))
-            yield RVCSample(
+            yield AudioFeatureSample(
                 speaker_id=torch.zeros(1, dtype=torch.long),
                 audio=audio,
                 spectrogram=torch.load(p.with_suffix(".spec"), weights_only=True),
@@ -207,7 +200,7 @@ class RVCDataset(IterableDataset[RVCSample]):
                 features=torch.load(p.with_suffix(".ft"), weights_only=True),
             )
 
-    def _save_sample(self, sample: RVCSample, path: Path) -> None:
+    def _save_sample(self, sample: AudioFeatureSample, path: Path) -> None:
         torchaudio.save(
             path.with_suffix(".wav"),
             sample.audio,

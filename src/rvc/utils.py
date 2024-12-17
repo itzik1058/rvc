@@ -1,11 +1,16 @@
+import math
 import warnings
 
 import numpy as np
 import numpy.typing as npt
+import torch
 from pydub import AudioSegment
 
-SAMPLE_RATE = 16_000
-TARGET_SAMPLE_RATE = 48_000
+F0_BIN = 256
+F0_MAX = 1100.0
+F0_MIN = 50.0
+F0_MEL_MIN = 1127 * math.log(1 + F0_MIN / 700)
+F0_MEL_MAX = 1127 * math.log(1 + F0_MAX / 700)
 
 
 def numpy_to_pydub(audio: npt.NDArray[np.float64], sample_rate: int) -> AudioSegment:
@@ -28,3 +33,15 @@ def pydub_to_numpy(segment: AudioSegment) -> npt.NDArray[np.float32]:
     ).reshape((-1, segment.channels))
     array /= 1 << (8 * segment.sample_width - 1)
     return array
+
+
+def f0_coarse_representation(f0: torch.Tensor) -> torch.Tensor:
+    f0_mel = 1127 * torch.log(1 + f0 / 700)
+    f0_coarse = f0_mel
+    f0_coarse[f0_coarse > 0] = 1 + (F0_BIN - 2) * (
+        f0_coarse[f0_coarse > 0] - F0_MEL_MIN
+    ) / (F0_MEL_MAX - F0_MEL_MIN)
+    f0_coarse[f0_coarse <= 1] = 1
+    f0_coarse[f0_coarse > F0_BIN - 1] = F0_BIN - 1
+    f0_coarse = f0_coarse.round().int()
+    return f0_coarse

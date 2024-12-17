@@ -23,8 +23,6 @@
             ];
             shellHook = with pkgs; ''
               export LD_LIBRARY_PATH=/run/opengl-driver/lib:${lib.makeLibraryPath buildInputs}:$LD_LIBRARY_PATH
-              uv sync
-              source .venv/bin/activate
             '';
           };
         }
